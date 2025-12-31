@@ -13,3 +13,6 @@ artifacts/
 .DS_Store
 .vscode/
 .idea/
+
+visualize_errors.py
+error_analysis.png
