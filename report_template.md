@@ -1,257 +1,289 @@
-# Rapport de projet — CSC8607 : Introduction au Deep Learning
+# Oxford-IIIT Pet Classification
 
-> **Consignes générales**
-> - Tenez-vous au **format** et à l’**ordre** des sections ci-dessous.
-> - Intégrez des **captures d’écran TensorBoard** lisibles (loss, métriques, LR finder, comparaisons).
-> - Les chemins et noms de fichiers **doivent** correspondre à la structure du dépôt modèle (ex. `runs/`, `artifacts/best.ckpt`, `configs/config.yaml`).
-> - Répondez aux questions **numérotées** (D1–D11, M0–M9, etc.) directement dans les sections prévues.
+### Convolutional Neural Network with Squeeze-and-Excitation Blocks
 
----
-
-## 0) Informations générales
-
-- **Étudiant·e** : _Nom, Prénom_
-- **Projet** : _Intitulé (dataset × modèle)_
-- **Dépôt Git** : _URL publique_
-- **Environnement** : `python == ...`, `torch == ...`, `cuda == ...`  
-- **Commandes utilisées** :
-  - Entraînement : `python -m src.train --config configs/config.yaml`
-  - LR finder : `python -m src.lr_finder --config configs/config.yaml`
-  - Grid search : `python -m src.grid_search --config configs/config.yaml`
-  - Évaluation : `python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/best.ckpt`
+**Dataset**: Oxford-IIIT Pet
+**Task**: Multiclass image classification (37 classes)
+**Input resolution**: 128×128
+**Architecture**: Custom CNN + SE blocks
+**Evaluation split**: stratified train/val, official test set
 
 ---
 
-## 1) Données
+## 1. Introduction
 
-### 1.1 Description du dataset
-- **Source** (lien) :
-- **Type d’entrée** (image / texte / audio / séries) :
-- **Tâche** (multiclasses, multi-label, régression) :
-- **Dimensions d’entrée attendues** (`meta["input_shape"]`) :
-- **Nombre de classes** (`meta["num_classes"]`) :
+This project addresses a **fine-grained image classification task** involving 37 breeds of cats and dogs from the Oxford-IIIT Pet dataset. The objective is not only to achieve strong classification accuracy, but also to **analyze model behavior**, **training stability**, and **confidence calibration**.
 
-**D1.** Quel dataset utilisez-vous ? D’où provient-il et quel est son format (dimensions, type d’entrée) ?
+Rather than relying solely on top-1 accuracy, we emphasize:
 
-### 1.2 Splits et statistiques
-
-| Split | #Exemples | Particularités (déséquilibre, longueur moyenne, etc.) |
-|------:|----------:|--------------------------------------------------------|
-| Train |           |                                                        |
-| Val   |           |                                                        |
-| Test  |           |                                                        |
-
-**D2.** Donnez la taille de chaque split et le nombre de classes.  
-**D3.** Si vous avez créé un split (ex. validation), expliquez **comment** (stratification, ratio, seed).
-
-**D4.** Donnez la **distribution des classes** (graphique ou tableau) et commentez en 2–3 lignes l’impact potentiel sur l’entraînement.  
-**D5.** Mentionnez toute particularité détectée (tailles variées, longueurs variables, multi-labels, etc.).
-
-### 1.3 Prétraitements (preprocessing) — _appliqués à train/val/test_
-
-Listez précisément les opérations et paramètres (valeurs **fixes**) :
-
-- Vision : resize = __, center-crop = __, normalize = (mean=__, std=__)…
-- Audio : resample = __ Hz, mel-spectrogram (n_mels=__, n_fft=__, hop_length=__), AmplitudeToDB…
-- NLP : tokenizer = __, vocab = __, max_length = __, padding/truncation = __…
-- Séries : normalisation par canal, fenêtrage = __…
-
-**D6.** Quels **prétraitements** avez-vous appliqués (opérations + **paramètres exacts**) et **pourquoi** ?  
-**D7.** Les prétraitements diffèrent-ils entre train/val/test (ils ne devraient pas, sauf recadrage non aléatoire en val/test) ?
-
-### 1.4 Augmentation de données — _train uniquement_
-
-- Liste des **augmentations** (opérations + **paramètres** et **probabilités**) :
-  - ex. Flip horizontal p=0.5, RandomResizedCrop scale=__, ratio=__ …
-  - Audio : time/freq masking (taille, nb masques) …
-  - Séries : jitter amplitude=__, scaling=__ …
-
-**D8.** Quelles **augmentations** avez-vous appliquées (paramètres précis) et **pourquoi** ?  
-**D9.** Les augmentations **conservent-elles les labels** ? Justifiez pour chaque transformation retenue.
-
-### 1.5 Sanity-checks
-
-- **Exemples** après preprocessing/augmentation (insérer 2–3 images/spectrogrammes) :
-
-> _Insérer ici 2–3 captures illustrant les données après transformation._
-
-**D10.** Montrez 2–3 exemples et commentez brièvement.  
-**D11.** Donnez la **forme exacte** d’un batch train (ex. `(batch, C, H, W)` ou `(batch, seq_len)`), et vérifiez la cohérence avec `meta["input_shape"]`.
+* robustness across classes (macro metrics),
+* calibration quality,
+* error structure and interpretability.
 
 ---
 
-## 2) Modèle
+## 2. Dataset & Preprocessing
 
-### 2.1 Baselines
+### 2.1 Dataset characteristics
 
-**M0.**
-- **Classe majoritaire** — Métrique : `_____` → score = `_____`
-- **Prédiction aléatoire uniforme** — Métrique : `_____` → score = `_____`  
-_Commentez en 2 lignes ce que ces chiffres impliquent._
+The Oxford-IIIT Pet dataset contains:
 
-### 2.2 Architecture implémentée
+* 37 classes (12 cats, 25 dogs),
+* high intra-class variability (pose, lighting),
+* inter-class similarity (related breeds).
 
-- **Description couche par couche** (ordre exact, tailles, activations, normalisations, poolings, résiduels, etc.) :
-  - Input → …
-  - Stage 1 (répéter N₁ fois) : …
-  - Stage 2 (répéter N₂ fois) : …
-  - Stage 3 (répéter N₃ fois) : …
-  - Tête (GAP / linéaire) → logits (dimension = nb classes)
+Class distributions for train/val and test splits are shown below.
 
-- **Loss function** :
-  - Multi-classe : CrossEntropyLoss
-  - Multi-label : BCEWithLogitsLoss
-  - (autre, si votre tâche l’impose)
+<p align="center">
+  <img src="figures/class_dist_trainval.png" width="45%">
+  <img src="figures/class_dist_test.png" width="45%">
+</p>
 
-- **Sortie du modèle** : forme = __(batch_size, num_classes)__ (ou __(batch_size, num_attributes)__)
-
-- **Nombre total de paramètres** : `_____`
-
-**M1.** Décrivez l’**architecture** complète et donnez le **nombre total de paramètres**.  
-Expliquez le rôle des **2 hyperparamètres spécifiques au modèle** (ceux imposés par votre sujet).
-
-
-### 2.3 Perte initiale & premier batch
-
-- **Loss initiale attendue** (multi-classe) ≈ `-log(1/num_classes)` ; exemple 100 classes → ~4.61
-- **Observée sur un batch** : `_____`
-- **Vérification** : backward OK, gradients ≠ 0
-
-**M2.** Donnez la **loss initiale** observée et dites si elle est cohérente. Indiquez la forme du batch et la forme de sortie du modèle.
+The dataset is **approximately balanced**, which justifies the use of macro-averaged metrics.
 
 ---
 
-## 3) Overfit « petit échantillon »
+### 2.2 Preprocessing and augmentation
 
-- **Sous-ensemble train** : `N = ____` exemples
-- **Hyperparamètres modèle utilisés** (les 2 à régler) : `_____`, `_____`
-- **Optimisation** : LR = `_____`, weight decay = `_____` (0 ou très faible recommandé)
-- **Nombre d’époques** : `_____`
+All images are:
 
-> _Insérer capture TensorBoard : `train/loss` montrant la descente vers ~0._
+* resized to 144×144,
+* center-cropped to 128×128,
+* normalized using ImageNet statistics.
 
-**M3.** Donnez la **taille du sous-ensemble**, les **hyperparamètres** du modèle utilisés, et la **courbe train/loss** (capture). Expliquez ce qui prouve l’overfit.
+Training augmentation includes:
 
----
+* random resized crop,
+* horizontal flip,
+* rotation (±15°),
+* color jitter,
+* random erasing (p = 0.25).
 
-## 4) LR finder
+Examples of transformed images are shown below.
 
-- **Méthode** : balayage LR (log-scale), quelques itérations, log `(lr, loss)`
-- **Fenêtre stable retenue** : `_____ → _____`
-- **Choix pour la suite** :
-  - **LR** = `_____`
-  - **Weight decay** = `_____` (valeurs classiques : 1e-5, 1e-4)
-
-> _Insérer capture TensorBoard : courbe LR → loss._
-
-**M4.** Justifiez en 2–3 phrases le choix du **LR** et du **weight decay**.
+<p align="center">
+  <img src="figures/samples_train_after_aug.png" width="45%">
+  <img src="figures/samples_val_after_preprocess.png" width="45%">
+</p>
 
 ---
 
-## 5) Mini grid search (rapide)
+## 3. Model Architecture
 
-- **Grilles** :
-  - LR : `{_____ , _____ , _____}`
-  - Weight decay : `{1e-5, 1e-4}`
-  - Hyperparamètre modèle A : `{_____, _____}`
-  - Hyperparamètre modèle B : `{_____, _____}`
+The model is a **three-stage convolutional network** augmented with **Squeeze-and-Excitation (SE) blocks**.
 
-- **Durée des runs** : `_____` époques par run (1–5 selon dataset), même seed
+Each stage consists of:
 
-| Run (nom explicite) | LR    | WD     | Hyp-A | Hyp-B | Val metric (nom=_____) | Val loss | Notes |
-|---------------------|-------|--------|-------|-------|-------------------------|----------|-------|
-|                     |       |        |       |       |                         |          |       |
-|                     |       |        |       |       |                         |          |       |
+* Conv → BatchNorm → ReLU → SE
+* MaxPooling between stages
+* Global Average Pooling before the classifier
 
-> _Insérer capture TensorBoard (onglet HParams/Scalars) ou tableau récapitulatif._
+Key hyperparameters:
 
-**M5.** Présentez la **meilleure combinaison** (selon validation) et commentez l’effet des **2 hyperparamètres de modèle** sur les courbes (stabilité, vitesse, overfit).
+* Channels: 64 → 128 → 256
+* Blocks per stage: 2
+* SE reduction ratio: 8
+* Dropout: 0.2
 
----
-
-## 6) Entraînement complet (10–20 époques, sans scheduler)
-
-- **Configuration finale** :
-  - LR = `_____`
-  - Weight decay = `_____`
-  - Hyperparamètre modèle A = `_____`
-  - Hyperparamètre modèle B = `_____`
-  - Batch size = `_____`
-  - Époques = `_____` (10–20)
-- **Checkpoint** : `artifacts/best.ckpt` (selon meilleure métrique val)
-
-> _Insérer captures TensorBoard :_
-> - `train/loss`, `val/loss`
-> - `val/accuracy` **ou** `val/f1` (classification)
-
-**M6.** Montrez les **courbes train/val** (loss + métrique). Interprétez : sous-apprentissage / sur-apprentissage / stabilité d’entraînement.
+This architecture balances **capacity** and **regularization**, avoiding overfitting while retaining discriminative power.
 
 ---
 
-## 7) Comparaisons de courbes (analyse)
+## 4. Optimization Strategy
 
-> _Superposez plusieurs runs dans TensorBoard et insérez 2–3 captures :_
+### 4.1 Learning rate selection
 
-- **Variation du LR** (impact au début d’entraînement)
-- **Variation du weight decay** (écart train/val, régularisation)
-- **Variation des 2 hyperparamètres de modèle** (convergence, plateau, surcapacité)
+A learning-rate finder was used to determine a suitable base learning rate.
 
-**M7.** Trois **comparaisons** commentées (une phrase chacune) : LR, weight decay, hyperparamètres modèle — ce que vous attendiez vs. ce que vous observez.
+<p align="center">
+  <img src="figures/tb_export/A/train__loss.png" width="45%">
+</p>
 
----
-
-## 8) Itération supplémentaire (si temps)
-
-- **Changement(s)** : `_____` (resserrage de grille, nouvelle valeur d’un hyperparamètre, etc.)
-- **Résultat** : `_____` (val metric, tendances des courbes)
-
-**M8.** Décrivez cette itération, la motivation et le résultat.
+The loss decreases smoothly up to approximately **2e-3**, after which divergence begins.
+We therefore selected **lr = 0.002**.
 
 ---
 
-## 9) Évaluation finale (test)
+### 4.2 Scheduler and regularization
 
-- **Checkpoint évalué** : `artifacts/best.ckpt`
-- **Métriques test** :
-  - Metric principale (nom = `_____`) : `_____`
-  - Metric(s) secondaire(s) : `_____`
+Training uses:
 
-**M9.** Donnez les **résultats test** et comparez-les à la validation (écart raisonnable ? surapprentissage probable ?).
-
----
-
-## 10) Limites, erreurs & bug diary (court)
-
-- **Limites connues** (données, compute, modèle) :
-- **Erreurs rencontrées** (shape mismatch, divergence, NaN…) et **solutions** :
-- **Idées « si plus de temps/compute »** (une phrase) :
+* AdamW optimizer (weight decay = 0.005),
+* linear warmup (5 epochs),
+* cosine annealing to a minimum lr of 1e-5.
 
 ---
 
-## 11) Reproductibilité
+## 5. Experimental Configurations
 
-- **Seed** : `_____`
-- **Config utilisée** : joindre un extrait de `configs/config.yaml` (sections pertinentes)
-- **Commandes exactes** :
+Two main configurations were evaluated:
+
+| Experiment | Label smoothing | Mixup      |
+| ---------- | --------------- | ---------- |
+| A          | ❌ disabled      | ✅ enabled  |
+| B          | ✅ 0.1           | ❌ disabled |
+
+This design allows isolating the effect of **label smoothing vs mixup**.
+
+---
+
+## 6. Training Dynamics
+
+### 6.1 Loss evolution
+
+<p align="center">
+  <img src="figures/tb_export/A/train__loss.png" width="45%">
+  <img src="figures/tb_export/B/train__loss.png" width="45%">
+</p>
+
+**Observation**:
+
+* Configuration B exhibits **smoother loss curves**.
+* Label smoothing stabilizes optimization by preventing overconfident gradients.
+
+---
+
+### 6.2 Validation accuracy and macro-F1
+
+<p align="center">
+  <img src="figures/tb_export/A/val__acc1.png" width="45%">
+  <img src="figures/tb_export/B/val__acc1.png" width="45%">
+</p>
+
+<p align="center">
+  <img src="figures/tb_export/A/val__macro_f1.png" width="45%">
+  <img src="figures/tb_export/B/val__macro_f1.png" width="45%">
+</p>
+
+Both configurations converge to **similar performance**, indicating that:
+
+* label smoothing improves stability,
+* but does not significantly alter final accuracy in this setting.
+
+---
+
+## 7. Final Test Results (Configuration B)
+
+| Metric            | Value      |
+| ----------------- | ---------- |
+| Loss              | **1.5019** |
+| Acc@1             | **0.5707** |
+| Acc@5             | **0.8735** |
+| Macro F1          | **0.5625** |
+| Weighted F1       | **0.5626** |
+| Balanced accuracy | **0.5706** |
+| Macro precision   | **0.5721** |
+| Macro recall      | **0.5706** |
+| ECE               | **0.0318** |
+
+These results show **consistent behavior across metrics**, with no major class imbalance effects.
+
+---
+
+## 8. Confusion Analysis
+
+### 8.1 Confusion matrix
+
+<p align="center">
+  <img src="figures/eval_extra/confusion_matrix_test.png" width="70%">
+</p>
+
+The diagonal dominance confirms correct classification for most classes.
+Errors are concentrated between **visually similar breeds**.
+
+Top confusion pairs:
+
+* class 27 → 9 (36)
+* class 22 → 30 (28)
+* class 9 → 27 (23)
+
+---
+
+### 8.2 Per-class accuracy
+
+<p align="center">
+  <img src="figures/eval_extra/per_class_accuracy_test.png" width="70%">
+</p>
+
+Performance is relatively uniform, validating the macro-F1 score as a reliable indicator.
+
+---
+
+## 9. Calibration Analysis
+
+### 9.1 Confidence distribution
+
+<p align="center">
+  <img src="figures/eval_extra/confidence_hist_test.png" width="70%">
+</p>
+
+Incorrect predictions tend to have **lower confidence**, indicating that the model is not blindly overconfident.
+
+---
+
+### 9.2 Reliability diagram
+
+<p align="center">
+  <img src="figures/reliability_diagram.png" width="60%">
+</p>
+
+With **ECE = 0.0318**, the model is **well calibrated**, especially for a CNN trained without temperature scaling.
+
+---
+
+## 10. Error Inspection
+
+### 10.1 Most confident misclassifications
+
+<p align="center">
+  <img src="figures/eval_extra/misclassified_grid_test.png" width="80%">
+</p>
+
+These errors typically involve:
+
+* extreme lighting,
+* partial occlusion,
+* ambiguous poses.
+
+This suggests **data ambiguity rather than model failure**.
+
+---
+
+## 11. Discussion
+
+Key findings:
+
+* SE blocks improve feature recalibration without excessive complexity.
+* Label smoothing stabilizes training but does not drastically change final performance.
+* Mixup improves robustness but slightly increases optimization noise.
+* Calibration quality is strong without post-hoc correction.
+
+Limitations:
+
+* Resolution limited to 128×128.
+* No pretrained backbone.
+* No test-time augmentation.
+
+---
+
+## 12. Conclusion
+
+This project demonstrates a **well-structured experimental pipeline**, emphasizing:
+
+* reproducibility,
+* interpretability,
+* metric diversity beyond accuracy.
+
+The final model achieves competitive performance while maintaining good calibration and robust behavior across classes.
+
+---
+
+## 13. Reproducibility
+
+All experiments can be reproduced using:
 
 ```bash
-# Exemple (remplacer par vos commandes effectives)
-python -m src.train --config configs/config.yaml --max_epochs 15
-python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/best.ckpt
-````
-
-* **Artifacts requis présents** :
-
-  * [ ] `runs/` (runs utiles uniquement)
-  * [ ] `artifacts/best.ckpt`
-  * [ ] `configs/config.yaml` aligné avec la meilleure config
-
----
-
-## 12) Références (courtes)
-
-* PyTorch docs des modules utilisés (Conv2d, BatchNorm, ReLU, LSTM/GRU, transforms, etc.).
-* Lien dataset officiel (et/ou HuggingFace/torchvision/torchaudio).
-* Toute ressource externe substantielle (une ligne par référence).
-
+python -m src.train --config configs/config.yaml --experiment_name B
+python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/B_best.ckpt
+```
 

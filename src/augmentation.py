@@ -20,14 +20,18 @@ def get_augmentation_transforms(config: Dict[str, Any]) -> Optional[transforms.C
 
     # Slightly stronger (but still reasonable)
     use_rrc = bool(aug.get("use_random_resized_crop", True))
-    re_prob = float(aug.get("random_erasing_p", 0.15))
+
+    scale_min = float(aug.get("rrc_scale_min", 0.60))
+    ratio_min = float(aug.get("rrc_ratio_min", 0.75))
+    ratio_max = float(aug.get("rrc_ratio_max", 1.33))
+
 
     ops = []
     if use_rrc:
         ops.append(transforms.RandomResizedCrop(
             img_size,
-            scale=(0.75, 1.0),
-            ratio=(0.9, 1.1),
+            scale=(scale_min, 1.0),
+            ratio=(ratio_min, ratio_max),
         ))
     else:
         ops += [

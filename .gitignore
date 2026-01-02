@@ -4,15 +4,9 @@
 __pycache__/
 .ipynb_checkpoints/
 
-# Données & sorties
-data/
-runs/
-artifacts/
 
 # OS / IDE
 .DS_Store
 .vscode/
 .idea/
 
-visualize_errors.py
-error_analysis.png

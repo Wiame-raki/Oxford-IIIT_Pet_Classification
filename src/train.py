@@ -16,16 +16,42 @@ from .utils import (
     set_seed,
     topk_correct,
 )
+from .metrics import confusion_matrix, top_confusion_pairs
+
+
+
+
+
+import numpy as np
+
+def mixup_data(x, y, alpha=0.2):
+    lam = np.random.beta(alpha, alpha) if alpha > 0 else 1.0
+    bs = x.size(0)
+    idx = torch.randperm(bs, device=x.device)
+    x_mix = lam * x + (1 - lam) * x[idx]
+    y_a, y_b = y, y[idx]
+    return x_mix, y_a, y_b, lam
 
 
 @torch.no_grad()
-def evaluate_epoch(model, loader, criterion, device):
+def evaluate_epoch(model, loader, criterion, device, num_classes: int):
+    from .metrics import (
+        confusion_matrix,
+        f1_from_confusion,
+        balanced_accuracy_from_confusion,
+        expected_calibration_error,
+    )
+
     model.eval()
 
     total_loss = 0.0
     total = 0
     correct1 = 0
     correct5 = 0
+
+    all_probs = []
+    all_targets = []
+    all_preds = []
 
     for x, y in loader:
         x = x.to(device, non_blocking=True)
@@ -42,12 +68,36 @@ def evaluate_epoch(model, loader, criterion, device):
         correct1 += topk[1]
         correct5 += topk[5]
 
+        probs = torch.softmax(logits, dim=1)
+        preds = probs.argmax(dim=1)
+
+        all_probs.append(probs)
+        all_targets.append(y)
+        all_preds.append(preds)
+
+    probs = torch.cat(all_probs, dim=0)
+    targets = torch.cat(all_targets, dim=0)
+    preds = torch.cat(all_preds, dim=0)
+
+    cm = confusion_matrix(num_classes, targets, preds)
+    macro_f1, weighted_f1, macro_prec, macro_rec = f1_from_confusion(cm)
+    bal_acc = balanced_accuracy_from_confusion(cm)
+    ece = expected_calibration_error(probs, targets, n_bins=15)
+
     return (
         total_loss / max(1, total),
         correct1 / max(1, total),
         correct5 / max(1, total),
+        {
+            "macro_f1": macro_f1,
+            "weighted_f1": weighted_f1,
+            "balanced_acc": bal_acc,
+            "macro_precision": macro_prec,
+            "macro_recall": macro_rec,
+            "ece": ece,
+            "confusion_matrix": cm,  # if you want to save pairs
+        },
     )
-
 
 def train(
     cfg: Dict[str, Any],
@@ -120,6 +170,9 @@ def train(
     # -------------------------
     # Warmup + Cosine scheduler (cast everything!)
     # -------------------------
+    # -------------------------
+    # Warmup + Cosine scheduler (robust)
+    # -------------------------
     epochs = int(cfg["training"]["epochs"])
     warmup_epochs = int(cfg["training"].get("warmup_epochs", 5))
     warmup_start_lr = float(cfg["training"].get("warmup_start_lr", 1e-4))
@@ -136,27 +189,34 @@ def train(
     if min_lr < 0:
         raise ValueError("min_lr must be >= 0")
 
-    # Warmup: warmup_start_lr -> base_lr (linear)
-    start_factor = warmup_start_lr / base_lr
-    warmup_sched = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=start_factor,
-        end_factor=1.0,
-        total_iters=warmup_epochs,
-    )
+    if warmup_epochs == 0:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=epochs,
+            eta_min=min_lr,
+        )
+    else:
+        # Warmup: warmup_start_lr -> base_lr (linear)
+        start_factor = warmup_start_lr / base_lr
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=start_factor,
+            end_factor=1.0,
+            total_iters=warmup_epochs,
+        )
 
-    # Cosine: base_lr -> min_lr over remaining epochs
-    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=epochs - warmup_epochs,
-        eta_min=min_lr,
-    )
+        # Cosine: base_lr -> min_lr over remaining epochs
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=epochs - warmup_epochs,
+            eta_min=min_lr,
+        )
 
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_sched, cosine_sched],
-        milestones=[warmup_epochs],
-    )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_sched, cosine_sched],
+            milestones=[warmup_epochs],
+        )
 
     # -------------------------
     # Checkpoint path
@@ -173,8 +233,11 @@ def train(
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
-        correct = 0
         total = 0
+
+        # accuracy computed ONLY on non-mixup batches
+        correct_nomix = 0
+        total_nomix = 0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}", leave=False)
         for x, y in pbar:
@@ -182,22 +245,42 @@ def train(
             y = y.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
-            loss = criterion(logits, y)
+            mixup_alpha = float(cfg.get("augmentation", {}).get("mixup_alpha", 0.0))
+            mixup_p = float(cfg.get("augmentation", {}).get("mixup_p", 0.0))
+
+            did_mixup = False
+            if mixup_alpha > 0 and (torch.rand(1).item() < mixup_p):
+                did_mixup = True
+                x, y_a, y_b, lam = mixup_data(x, y, alpha=mixup_alpha)
+                logits = model(x)
+                loss = lam * criterion(logits, y_a) + (1 - lam) * criterion(logits, y_b)
+            else:
+                logits = model(x)
+                loss = criterion(logits, y)
+
             loss.backward()
             optimizer.step()
 
             bs = y.size(0)
             running_loss += float(loss.item()) * bs
             total += bs
-            correct += (logits.argmax(dim=1) == y).sum().item()
+
+            # Only compute "train acc1" when NOT using mixup
+            if not did_mixup:
+                total_nomix += bs
+                correct_nomix += (logits.argmax(dim=1) == y).sum().item()
 
             pbar.set_postfix(loss=float(loss.item()))
 
         train_loss = running_loss / max(1, total)
-        train_acc1 = correct / max(1, total)
+        train_acc1 = correct_nomix / max(1, total_nomix)  # true no-mixup train acc
 
-        val_loss, val_acc1, val_acc5 = evaluate_epoch(model, val_loader, criterion, device)
+        num_classes = int(cfg["model"]["num_classes"])
+        val_loss, val_acc1, val_acc5, val_metrics = evaluate_epoch(
+            model, val_loader, criterion, device, num_classes=num_classes
+        )
+
+
 
         # Step scheduler once per epoch
         scheduler.step()
@@ -207,14 +290,21 @@ def train(
             f"[Epoch {epoch:03d}/{epochs}] "
             f"lr={lr_now:.2e} | "
             f"train: loss={train_loss:.4f}, acc1={train_acc1:.4f} | "
-            f"val: loss={val_loss:.4f}, acc1={val_acc1:.4f}, acc5={val_acc5:.4f}"
+            f"val: loss={val_loss:.4f}, acc1={val_acc1:.4f}, acc5={val_acc5:.4f} "
+            f"macro_f1={val_metrics['macro_f1']:.4f}, bal_acc={val_metrics['balanced_acc']:.4f}, ece={val_metrics['ece']:.4f}"
         )
+
+        writer.add_scalar("val/macro_f1", val_metrics["macro_f1"], epoch)
+        writer.add_scalar("val/weighted_f1", val_metrics["weighted_f1"], epoch)
+        writer.add_scalar("val/balanced_acc", val_metrics["balanced_acc"], epoch)
+        writer.add_scalar("val/ece", val_metrics["ece"], epoch)
 
         # TensorBoard logs (optional)
         writer.add_scalar("lr", lr_now, epoch)
         writer.add_scalar("train/loss", train_loss, epoch)
         writer.add_scalar("val/loss", val_loss, epoch)
-        writer.add_scalar("train/acc1", train_acc1, epoch)
+        writer.add_scalar("train/acc1_nomix", train_acc1, epoch)
+        writer.add_scalar("train/acc1_nomix_frac", total_nomix / max(1, total), epoch)  # how often acc was measured
         writer.add_scalar("val/acc1", val_acc1, epoch)
         writer.add_scalar("val/acc5", val_acc5, epoch)
 
@@ -222,6 +312,7 @@ def train(
         if val_acc1 > best_val_acc1:
             best_val_acc1 = val_acc1
             best_epoch = epoch
+            pairs = top_confusion_pairs(val_metrics["confusion_matrix"], k=10).tolist()
             torch.save(
                 {
                     "model_state": model.state_dict(),
@@ -230,6 +321,8 @@ def train(
                     "val_acc1": float(val_acc1),
                     "val_acc5": float(val_acc5),
                     "meta": meta,
+                    "val_metrics": {k: float(v) for k, v in val_metrics.items() if k != "confusion_matrix"},
+                    "top_confusions": pairs,
                 },
                 checkpoint_path,
             )

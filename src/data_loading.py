@@ -80,13 +80,40 @@ def get_dataloaders(cfg: Dict[str, Any]):
         transform=eval_tf,
     )
 
-    # Create our own validation split from trainval
-    n_total = len(full_trainval_train_tf)
-    n_val = int(round(n_total * val_split))
-    n_train = n_total - n_val
-    train_subset, val_subset_tmp = random_split(full_trainval_train_tf, [n_train, n_val], generator=g)
+    # --- Stratified val split (per class) ---
+    # Build a "label-only" dataset (no transforms needed) to get targets
+    label_ds = OxfordIIITPet(
+        root=data_path,
+        split="trainval",
+        target_types="category",
+        download=False,
+        transform=None,
+    )
 
-    # Val subset must NOT use random aug -> recreate base dataset with eval_tf
+    num_classes = int(cfg["model"]["num_classes"])
+    indices_by_class = [[] for _ in range(num_classes)]
+
+    for idx in range(len(label_ds)):
+        _, y = label_ds[idx]
+        indices_by_class[int(y)].append(idx)
+
+    val_indices = []
+    train_indices = []
+
+    for c in range(num_classes):
+        cls_idx = indices_by_class[c]
+        # deterministic shuffle per class
+        cls_idx = torch.tensor(cls_idx)
+        perm = cls_idx[torch.randperm(len(cls_idx), generator=g)].tolist()
+
+        n_val_c = max(1, int(round(len(perm) * val_split)))
+        val_indices.extend(perm[:n_val_c])
+        train_indices.extend(perm[n_val_c:])
+
+    # Train subset uses train_tf (aug)
+    train_subset = Subset(full_trainval_train_tf, train_indices)
+
+    # Val subset uses eval_tf (no aug)
     full_trainval_eval_tf = OxfordIIITPet(
         root=data_path,
         split="trainval",
@@ -94,7 +121,7 @@ def get_dataloaders(cfg: Dict[str, Any]):
         download=False,
         transform=eval_tf,
     )
-    val_ds = Subset(full_trainval_eval_tf, val_subset_tmp.indices)
+    val_ds = Subset(full_trainval_eval_tf, val_indices)
 
     train_loader = DataLoader(
         train_subset,

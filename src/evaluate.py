@@ -1,49 +1,66 @@
+# src/evaluate.py
 import argparse
-from typing import Any, Dict, Tuple
-
 import torch
 import torch.nn as nn
-from tqdm import tqdm
 
 from .data_loading import get_dataloaders
 from .model import PetSE_CNN
-from .utils import get_device, load_config, topk_correct
+from .utils import get_device, load_config
+from .metrics import (
+    confusion_matrix,
+    f1_from_confusion,
+    balanced_accuracy_from_confusion,
+    expected_calibration_error,
+    top_confusion_pairs,
+)
 
 
 @torch.no_grad()
-def evaluate(cfg: Dict[str, Any], checkpoint_path: str) -> Tuple[float, float, float]:
+def evaluate(cfg, checkpoint_path: str):
     device = get_device()
-    _, _, test_loader, meta = get_dataloaders(cfg)
+    print(f"Using device: {device}")
 
+    # -------------------------
+    # Load checkpoint
+    # -------------------------
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = ckpt["model_state"]
+
+    # -------------------------
+    # Data
+    # -------------------------
+    _, val_loader, test_loader, meta = get_dataloaders(cfg)
+
+    num_classes = int(cfg["model"]["num_classes"])
+
+    # -------------------------
+    # Model
+    # -------------------------
     model = PetSE_CNN(
-        num_classes=int(cfg["model"]["num_classes"]),
+        num_classes=num_classes,
         reduction=int(cfg["model"]["reduction"]),
         blocks_per_stage=int(cfg["model"]["blocks_per_stage"]),
         dropout=float(cfg["model"]["dropout"]),
     ).to(device)
 
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-
-    if isinstance(ckpt, dict) and "model_state" in ckpt:
-        model.load_state_dict(ckpt["model_state"])
-    else:
-        model.load_state_dict(ckpt)
-
+    model.load_state_dict(state_dict)
     model.eval()
 
     criterion = nn.CrossEntropyLoss()
 
-    num_classes = int(cfg["model"]["num_classes"])
-    class_correct = torch.zeros(num_classes, dtype=torch.long)
-    class_total = torch.zeros(num_classes, dtype=torch.long)
+    # -------------------------
+    # Evaluation loop
+    # -------------------------
+    all_probs = []
+    all_targets = []
+    all_preds = []
 
     total_loss = 0.0
     total = 0
     correct1 = 0
     correct5 = 0
 
-    for x, y in tqdm(test_loader, desc="Evaluating", leave=False):
+    for x, y in test_loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
@@ -54,72 +71,68 @@ def evaluate(cfg: Dict[str, Any], checkpoint_path: str) -> Tuple[float, float, f
         total_loss += float(loss.item()) * bs
         total += bs
 
-        topk = topk_correct(logits, y, ks=(1, 5))
-        correct1 += topk[1]
-        correct5 += topk[5]
+        probs = torch.softmax(logits, dim=1)
+        preds = probs.argmax(dim=1)
 
-        preds = logits.argmax(dim=1)
-        for cls in range(num_classes):
-            mask = (y == cls)
-            if mask.any():
-                class_total[cls] += mask.sum().item()
-                class_correct[cls] += (preds[mask] == y[mask]).sum().item()
+        # top-k
+        top5 = logits.topk(5, dim=1).indices
+        correct1 += (preds == y).sum().item()
+        correct5 += (top5 == y.unsqueeze(1)).any(dim=1).sum().item()
 
-    avg_loss = total_loss / max(1, total)
-    acc1 = correct1 / max(1, total)
-    acc5 = correct5 / max(1, total)
+        all_probs.append(probs.cpu())
+        all_targets.append(y.cpu())
+        all_preds.append(preds.cpu())
 
-    # Per-class accuracy (avoid division by 0)
-    cls_accs = torch.zeros(num_classes, dtype=torch.float32)
-    for c in range(num_classes):
-        if class_total[c].item() > 0:
-            cls_accs[c] = class_correct[c].float() / class_total[c].float()
-        else:
-            cls_accs[c] = float("nan")
+    probs = torch.cat(all_probs, dim=0)
+    targets = torch.cat(all_targets, dim=0)
+    preds = torch.cat(all_preds, dim=0)
 
-    print(f"Test size: {meta['n_test']}")
-    print(f"Test loss: {avg_loss:.4f}")
-    print(f"Test acc@1: {acc1:.4f}")
-    print(f"Test acc@5: {acc5:.4f}")
+    # -------------------------
+    # Metrics
+    # -------------------------
+    cm = confusion_matrix(num_classes, targets, preds)
+    macro_f1, weighted_f1, macro_prec, macro_rec = f1_from_confusion(cm)
+    bal_acc = balanced_accuracy_from_confusion(cm)
+    ece = expected_calibration_error(probs, targets, n_bins=15)
+    top_pairs = top_confusion_pairs(cm, k=10)
 
-    # Show best/worst classes by accuracy
-    k = 5
-    valid_mask = torch.isfinite(cls_accs)
-    valid_idx = torch.where(valid_mask)[0]
+    # -------------------------
+    # Print results
+    # -------------------------
+    print("\n=== Evaluation results (TEST) ===")
+    print(f"Loss           : {total_loss / total:.4f}")
+    print(f"Acc@1          : {correct1 / total:.4f}")
+    print(f"Acc@5          : {correct5 / total:.4f}")
+    print(f"Macro F1       : {macro_f1:.4f}")
+    print(f"Weighted F1    : {weighted_f1:.4f}")
+    print(f"Balanced Acc   : {bal_acc:.4f}")
+    print(f"Macro Precision: {macro_prec:.4f}")
+    print(f"Macro Recall   : {macro_rec:.4f}")
+    print(f"ECE            : {ece:.4f}")
 
-    if valid_idx.numel() > 0:
-        valid_accs = cls_accs[valid_idx]
-        order = torch.argsort(valid_accs)  # ascending
+    print("\nTop confusion pairs [true, pred, count]:")
+    for t, p, c in top_pairs.tolist():
+        print(f"  class {t} → {p} : {c}")
 
-        # Worst k
-        worst_local = order[: min(k, order.numel())]
-        worst_idx = valid_idx[worst_local]
-
-        # Best k (flip instead of [::-1])
-        best_local = order[-min(k, order.numel()):].flip(0)
-        best_idx = valid_idx[best_local]
-
-        print("\nWorst-5 classes (class_id, acc):")
-        for c in worst_idx.tolist():
-            tot = int(class_total[c].item())
-            cor = int(class_correct[c].item())
-            acc = float(cls_accs[c].item())
-            print(f"  {c:02d}: {acc:.3f}  ({cor}/{tot})")
-
-        print("\nBest-5 classes (class_id, acc):")
-        for c in best_idx.tolist():
-            tot = int(class_total[c].item())
-            cor = int(class_correct[c].item())
-            acc = float(cls_accs[c].item())
-            print(f"  {c:02d}: {acc:.3f}  ({cor}/{tot})")
-
-    return avg_loss, acc1, acc5
+    return {
+        "loss": total_loss / total,
+        "acc1": correct1 / total,
+        "acc5": correct5 / total,
+        "macro_f1": macro_f1,
+        "weighted_f1": weighted_f1,
+        "balanced_acc": bal_acc,
+        "macro_precision": macro_prec,
+        "macro_recall": macro_rec,
+        "ece": ece,
+        "confusion_matrix": cm,
+        "top_confusions": top_pairs,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--checkpoint", required=True)
     args = parser.parse_args()
 
     cfg = load_config(args.config)

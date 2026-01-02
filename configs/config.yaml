@@ -1,5 +1,5 @@
 experiment:
-  name: "baseline_r8_b2"
+  name: "B_ls01_r8_b2"
   seed: 42
 
 paths:
@@ -18,21 +18,24 @@ data:
 augmentation:
   enabled: true
   use_random_resized_crop: true
-  rotation_deg: 10
   hflip_p: 0.5
-  jitter_brightness: 0.10
-  jitter_contrast: 0.10
-  jitter_saturation: 0.10
-  jitter_hue: 0.05
-  random_erasing_p: 0.1
+  rotation_deg: 15
+  jitter_brightness: 0.20
+  jitter_contrast: 0.20
+  jitter_saturation: 0.20
+  jitter_hue: 0.08
+  random_erasing_p: 0.25
+  rrc_scale_min: 0.60
+  rrc_ratio_min: 0.75
+  rrc_ratio_max: 1.33
+  mixup_alpha: 0.0
+  mixup_p: 0.0
 
 training:
   lr: 0.002
-  weight_decay: 0.01
+  weight_decay: 0.005
   epochs: 100
-  label_smoothing: 0.05
-  lr_patience: 5
-  lr_decay_factor: 0.5
+  label_smoothing: 0.1
   min_lr: 1e-5
   warmup_epochs: 5
   warmup_start_lr: 1e-4
@@ -41,7 +44,7 @@ model:
   num_classes: 37
   reduction: 8
   blocks_per_stage: 2
-  dropout: 0.4
+  dropout: 0.2
 
 lr_finder:
   lr_min: 1e-7
