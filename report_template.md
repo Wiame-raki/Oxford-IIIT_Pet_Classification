@@ -1,289 +1,193 @@
-# Oxford-IIIT Pet Classification
+# Rapport de projet — Classification d’images
 
-### Convolutional Neural Network with Squeeze-and-Excitation Blocks
-
-**Dataset**: Oxford-IIIT Pet
-**Task**: Multiclass image classification (37 classes)
-**Input resolution**: 128×128
-**Architecture**: Custom CNN + SE blocks
-**Evaluation split**: stratified train/val, official test set
+**Oxford-IIIT Pet Dataset**
 
 ---
 
-## 1. Introduction
+## Introduction
 
-This project addresses a **fine-grained image classification task** involving 37 breeds of cats and dogs from the Oxford-IIIT Pet dataset. The objective is not only to achieve strong classification accuracy, but also to **analyze model behavior**, **training stability**, and **confidence calibration**.
+Ce projet porte sur la classification automatique d’images du jeu de données **Oxford-IIIT Pet**, composé de 37 races de chiens et de chats. L’objectif est de prédire la race présente sur une image à partir d’une photographie RGB, dans un cadre de **classification multi-classe**.
 
-Rather than relying solely on top-1 accuracy, we emphasize:
+Bien que le dataset soit relativement équilibré, la tâche reste non triviale. Il s’agit d’un problème de **classification fine-grained**, dans lequel les classes se distinguent parfois par des différences visuelles subtiles (texture du pelage, forme des oreilles, proportions du museau), souvent perturbées par des variations importantes de pose, d’éclairage, de cadrage ou d’arrière-plan.
 
-* robustness across classes (macro metrics),
-* calibration quality,
-* error structure and interpretability.
+L’enjeu principal de ce projet n’est donc pas uniquement d’obtenir une bonne précision globale, mais de construire un pipeline cohérent, interprétable, et capable de généraliser, tout en comprenant précisément **où et pourquoi le modèle se trompe**.
 
 ---
 
-## 2. Dataset & Preprocessing
+## 1. Données et prétraitement
 
-### 2.1 Dataset characteristics
+### 1.1 Description du jeu de données
 
-The Oxford-IIIT Pet dataset contains:
+Le jeu de données Oxford-IIIT Pet contient des images RGB de tailles variables, représentant des chiens et des chats répartis en **37 classes**. Chaque image est associée à une unique étiquette correspondant à la race.
 
-* 37 classes (12 cats, 25 dogs),
-* high intra-class variability (pose, lighting),
-* inter-class similarity (related breeds).
+Après chargement des données, les tailles des ensembles sont les suivantes :
 
-Class distributions for train/val and test splits are shown below.
+* **Train** : 3311 images
+* **Validation** : 369 images
+* **Test** : 3669 images
 
-<p align="center">
-  <img src="figures/class_dist_trainval.png" width="45%">
-  <img src="figures/class_dist_test.png" width="45%">
-</p>
+Les dimensions d’entrée du modèle sont fixées à **(3, 128, 128)**.
 
-The dataset is **approximately balanced**, which justifies the use of macro-averaged metrics.
+La distribution des classes est quasi uniforme, aussi bien sur l’ensemble train/validation que sur l’ensemble test, comme le montrent les histogrammes de distribution. Cette propriété permet d’utiliser des métriques macro (macro-F1, balanced accuracy) sans craindre qu’elles soient dominées par quelques classes majoritaires.
 
 ---
 
-### 2.2 Preprocessing and augmentation
+### 1.2 Prétraitement des images
 
-All images are:
+Toutes les images subissent les transformations suivantes :
 
-* resized to 144×144,
-* center-cropped to 128×128,
-* normalized using ImageNet statistics.
+* redimensionnement à 144×144 ;
+* recadrage central à 128×128 ;
+* normalisation à l’aide des statistiques ImageNet (mean/std).
 
-Training augmentation includes:
+Ces choix visent à :
 
-* random resized crop,
-* horizontal flip,
-* rotation (±15°),
-* color jitter,
-* random erasing (p = 0.25).
+* standardiser les entrées pour le réseau convolutif ;
+* limiter les distorsions géométriques excessives ;
+* conserver une compatibilité avec des architectures CNN classiques.
 
-Examples of transformed images are shown below.
-
-<p align="center">
-  <img src="figures/samples_train_after_aug.png" width="45%">
-  <img src="figures/samples_val_after_preprocess.png" width="45%">
-</p>
+Les ensembles de validation et de test utilisent exactement les mêmes prétraitements déterministes, garantissant une évaluation cohérente.
 
 ---
 
-## 3. Model Architecture
+### 1.3 Augmentation de données
 
-The model is a **three-stage convolutional network** augmented with **Squeeze-and-Excitation (SE) blocks**.
+L’augmentation est appliquée **uniquement sur l’ensemble d’entraînement**. Elle inclut :
 
-Each stage consists of:
+* Random Resized Crop (variations d’échelle et de position) ;
+* flip horizontal (symétrie naturelle des animaux) ;
+* rotations légères ;
+* jitter de couleur (luminosité, contraste, saturation) ;
+* random erasing (régularisation spatiale).
 
-* Conv → BatchNorm → ReLU → SE
-* MaxPooling between stages
-* Global Average Pooling before the classifier
-
-Key hyperparameters:
-
-* Channels: 64 → 128 → 256
-* Blocks per stage: 2
-* SE reduction ratio: 8
-* Dropout: 0.2
-
-This architecture balances **capacity** and **regularization**, avoiding overfitting while retaining discriminative power.
+Des visualisations d’exemples après augmentation montrent que les transformations restent réalistes et conservent l’identité visuelle des animaux. Cette étape est essentielle pour vérifier que l’augmentation n’introduit pas d’artefacts destructeurs.
 
 ---
 
-## 4. Optimization Strategy
+## 2. Modèle et architecture
 
-### 4.1 Learning rate selection
+### 2.1 Architecture générale
 
-A learning-rate finder was used to determine a suitable base learning rate.
+Le modèle implémenté est un réseau convolutionnel en trois blocs principaux, avec une augmentation progressive du nombre de canaux. Chaque bloc est composé de convolutions suivies de normalisation et d’activation ReLU.
 
-<p align="center">
-  <img src="figures/tb_export/A/train__loss.png" width="45%">
-</p>
+Des **blocs Squeeze-and-Excitation (SE)** sont intégrés afin de permettre au réseau de pondérer dynamiquement l’importance des canaux en fonction du contenu global de l’image. Cette approche est particulièrement adaptée aux tâches de classification fine, où certaines caractéristiques visuelles sont pertinentes uniquement dans certains contextes.
 
-The loss decreases smoothly up to approximately **2e-3**, after which divergence begins.
-We therefore selected **lr = 0.002**.
+La tête de classification repose sur un **Global Average Pooling**, suivi d’une couche linéaire produisant 37 logits.
 
----
-
-### 4.2 Scheduler and regularization
-
-Training uses:
-
-* AdamW optimizer (weight decay = 0.005),
-* linear warmup (5 epochs),
-* cosine annealing to a minimum lr of 1e-5.
+Le modèle contient environ **1,2 million de paramètres**, tous entraînables.
 
 ---
 
-## 5. Experimental Configurations
+### 2.2 Justification des choix
 
-Two main configurations were evaluated:
-
-| Experiment | Label smoothing | Mixup      |
-| ---------- | --------------- | ---------- |
-| A          | ❌ disabled      | ✅ enabled  |
-| B          | ✅ 0.1           | ❌ disabled |
-
-This design allows isolating the effect of **label smoothing vs mixup**.
+L’utilisation de blocs SE vise à améliorer la capacité du modèle à exploiter des indices visuels fins sans recourir à une augmentation massive de la profondeur ou de la résolution. En revanche, ce mécanisme ne capture pas explicitement les relations spatiales fines, ce qui constitue une limite connue de cette architecture.
 
 ---
 
-## 6. Training Dynamics
+## 3. Vérifications initiales et validation du pipeline
 
-### 6.1 Loss evolution
+Avant tout entraînement long, une étape de **sur-apprentissage volontaire sur un très petit sous-ensemble** a été réalisée. Le but est de vérifier que :
 
-<p align="center">
-  <img src="figures/tb_export/A/train__loss.png" width="45%">
-  <img src="figures/tb_export/B/train__loss.png" width="45%">
-</p>
+* la loss est correctement implémentée ;
+* les gradients sont non nuls ;
+* le modèle est capable de mémoriser des exemples simples.
 
-**Observation**:
+Le modèle parvient à faire décroître la loss jusqu’à des valeurs proches de zéro sur ce sous-ensemble, ce qui valide l’implémentation du pipeline d’entraînement.
 
-* Configuration B exhibits **smoother loss curves**.
-* Label smoothing stabilizes optimization by preventing overconfident gradients.
+Cette étape ne vise pas la performance, mais la **fiabilité du code**, et permet d’éviter des erreurs silencieuses coûteuses.
 
 ---
 
-### 6.2 Validation accuracy and macro-F1
+## 4. Choix des hyperparamètres et stratégie d’entraînement
 
-<p align="center">
-  <img src="figures/tb_export/A/val__acc1.png" width="45%">
-  <img src="figures/tb_export/B/val__acc1.png" width="45%">
-</p>
+### 4.1 Recherche du taux d’apprentissage
 
-<p align="center">
-  <img src="figures/tb_export/A/val__macro_f1.png" width="45%">
-  <img src="figures/tb_export/B/val__macro_f1.png" width="45%">
-</p>
+Une exploration du taux d’apprentissage a été effectuée afin d’identifier une zone stable où la loss décroît rapidement sans divergence. Le taux retenu se situe juste en-dessous de la zone d’instabilité observée, ce qui permet une convergence rapide tout en conservant une dynamique stable.
 
-Both configurations converge to **similar performance**, indicating that:
+L’optimiseur utilisé est **AdamW**, choisi pour sa robustesse et sa gestion explicite de la régularisation par weight decay.
 
-* label smoothing improves stability,
-* but does not significantly alter final accuracy in this setting.
+Un scheduler de type **cosine decay avec warmup** est employé, afin de limiter l’instabilité en début d’entraînement et d’affiner la convergence finale.
 
 ---
 
-## 7. Final Test Results (Configuration B)
+### 4.2 Comparaison des stratégies de régularisation (A vs B)
 
-| Metric            | Value      |
-| ----------------- | ---------- |
-| Loss              | **1.5019** |
-| Acc@1             | **0.5707** |
-| Acc@5             | **0.8735** |
-| Macro F1          | **0.5625** |
-| Weighted F1       | **0.5626** |
-| Balanced accuracy | **0.5706** |
-| Macro precision   | **0.5721** |
-| Macro recall      | **0.5706** |
-| ECE               | **0.0318** |
+Deux configurations principales ont été comparées :
 
-These results show **consistent behavior across metrics**, with no major class imbalance effects.
+* **Expérience A** : utilisation de mixup, sans label smoothing ;
+* **Expérience B** : utilisation de label smoothing (0.1), sans mixup.
+
+Ces deux techniques visent à améliorer la généralisation, mais reposent sur des mécanismes différents. Mixup agit directement sur les données, tandis que le label smoothing agit sur la fonction de perte et la confiance du modèle.
+
+Les courbes d’entraînement montrent que les deux approches atteignent des performances comparables, mais que l’expérience B présente une dynamique plus régulière et une meilleure stabilité sur les métriques de validation.
 
 ---
 
-## 8. Confusion Analysis
+## 5. Résultats finaux sur l’ensemble de test
 
-### 8.1 Confusion matrix
+Le modèle final sélectionné atteint les performances suivantes sur l’ensemble de test :
 
-<p align="center">
-  <img src="figures/eval_extra/confusion_matrix_test.png" width="70%">
-</p>
+* **Accuracy top-1** : 57.1 %
+* **Accuracy top-5** : 87.3 %
+* **Macro-F1** : 0.56
+* **Balanced accuracy** : 0.57
+* **ECE (Expected Calibration Error)** : 0.032
 
-The diagonal dominance confirms correct classification for most classes.
-Errors are concentrated between **visually similar breeds**.
-
-Top confusion pairs:
-
-* class 27 → 9 (36)
-* class 22 → 30 (28)
-* class 9 → 27 (23)
+Ces résultats sont cohérents avec la difficulté intrinsèque de la tâche, compte tenu de la résolution limitée et de l’entraînement depuis zéro.
 
 ---
 
-### 8.2 Per-class accuracy
+## 6. Analyse des erreurs
 
-<p align="center">
-  <img src="figures/eval_extra/per_class_accuracy_test.png" width="70%">
-</p>
+### 6.1 Matrice de confusion
 
-Performance is relatively uniform, validating the macro-F1 score as a reliable indicator.
+La matrice de confusion met en évidence une diagonale dominante, indiquant une bonne capacité de discrimination globale. Les erreurs restantes ne sont pas aléatoires : elles se concentrent principalement entre races visuellement proches.
 
----
-
-## 9. Calibration Analysis
-
-### 9.1 Confidence distribution
-
-<p align="center">
-  <img src="figures/eval_extra/confidence_hist_test.png" width="70%">
-</p>
-
-Incorrect predictions tend to have **lower confidence**, indicating that the model is not blindly overconfident.
+Certaines confusions sont symétriques, suggérant une ambiguïté réelle entre classes, tandis que d’autres sont asymétriques, traduisant un biais du modèle vers certaines caractéristiques dominantes.
 
 ---
 
-### 9.2 Reliability diagram
+### 6.2 Analyse par classe
 
-<p align="center">
-  <img src="figures/reliability_diagram.png" width="60%">
-</p>
-
-With **ECE = 0.0318**, the model is **well calibrated**, especially for a CNN trained without temperature scaling.
+L’analyse des performances par classe montre une variabilité modérée, sans effondrement sur un sous-ensemble spécifique. Cette observation est cohérente avec la proximité entre la macro-F1 et la weighted-F1, indiquant une performance relativement homogène.
 
 ---
 
-## 10. Error Inspection
+### 6.3 Analyse qualitative des erreurs
 
-### 10.1 Most confident misclassifications
+L’inspection visuelle des images mal classées révèle plusieurs facteurs récurrents :
 
-<p align="center">
-  <img src="figures/eval_extra/misclassified_grid_test.png" width="80%">
-</p>
+* poses atypiques ;
+* visages partiellement masqués ;
+* recadrages défavorables ;
+* éclairages extrêmes ;
+* ambiguïtés intrinsèques entre certaines races.
 
-These errors typically involve:
-
-* extreme lighting,
-* partial occlusion,
-* ambiguous poses.
-
-This suggests **data ambiguity rather than model failure**.
+Ces erreurs reflètent davantage la difficulté des données que des défaillances grossières du modèle.
 
 ---
 
-## 11. Discussion
+## 7. Calibration et fiabilité des prédictions
 
-Key findings:
+L’analyse de la calibration à l’aide de courbes de fiabilité montre une bonne adéquation entre la confiance prédite et la précision empirique. La faible valeur de l’ECE confirme que les probabilités produites par le modèle sont globalement bien calibrées.
 
-* SE blocks improve feature recalibration without excessive complexity.
-* Label smoothing stabilizes training but does not drastically change final performance.
-* Mixup improves robustness but slightly increases optimization noise.
-* Calibration quality is strong without post-hoc correction.
-
-Limitations:
-
-* Resolution limited to 128×128.
-* No pretrained backbone.
-* No test-time augmentation.
+L’utilisation du label smoothing dans la configuration finale contribue probablement à cette propriété, en limitant les prédictions excessivement confiantes.
 
 ---
 
-## 12. Conclusion
+## 8. Limites et perspectives
 
-This project demonstrates a **well-structured experimental pipeline**, emphasizing:
+Plusieurs limites peuvent être identifiées :
 
-* reproducibility,
-* interpretability,
-* metric diversity beyond accuracy.
+* entraînement depuis zéro, sans transfert d’apprentissage ;
+* résolution d’entrée relativement faible pour une tâche fine-grained ;
+* absence de mécanismes explicites d’attention spatiale ;
+* recherche d’hyperparamètres limitée.
 
-The final model achieves competitive performance while maintaining good calibration and robust behavior across classes.
+Des améliorations possibles incluraient l’utilisation de modèles pré-entraînés, une augmentation de la résolution, ou l’ajout de mécanismes d’attention spatiale ou de stratégies d’augmentation plus ciblées.
 
 ---
 
-## 13. Reproducibility
+## Conclusion
 
-All experiments can be reproduced using:
-
-```bash
-python -m src.train --config configs/config.yaml --experiment_name B
-python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/B_best.ckpt
-```
-
+Ce projet met en œuvre un pipeline complet de classification d’images, depuis la validation du code jusqu’à l’analyse fine des erreurs et de la calibration. Les résultats obtenus sont cohérents avec la difficulté du problème et illustrent l’importance d’une démarche méthodique, fondée sur l’analyse et la compréhension du comportement du modèle, au-delà des métriques brutes.
