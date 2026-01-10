@@ -1,8 +1,16 @@
-torch
-torchvision
-torchaudio
-torchtext
-tensorboard
-pyyaml
-tqdm
-numpy
+# Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Training & Visualization
+tensorboard>=2.10.0
+matplotlib>=3.5.0
+tqdm>=4.60.0
+
+# Data & Config
+numpy>=1.21.0
+pyyaml>=6.0
+Pillow>=9.0.0
+
+# Optional: for report generation scripts
+pandas>=1.3.0

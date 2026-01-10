@@ -1,15 +1,29 @@
-# Environnements & artefacts
+# Environnements
 .venv/
+.venv1/
 .env/
 __pycache__/
+*.pyc
+*.pyo
 .ipynb_checkpoints/
 
-# Données & sorties
+# Données (téléchargées automatiquement)
 data/
 *.tar.gz
 
+# Fichiers temporaires
+*.tmp
+*.temp
+*.log
+
 # OS / IDE
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
+*.swp
+*~
 
+# Optionnel: décommenter pour ignorer les gros fichiers
+# artifacts/*.ckpt
+# runs/
