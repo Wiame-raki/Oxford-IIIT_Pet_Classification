@@ -167,4 +167,4 @@ tensorboard --logdir runs --port 6006
 
 ## Author
 
-**RAKI Wiame** — CSC8607 Introduction to Deep Learning, ENSIIE 2024-2025
+**RAKI Wiame** — CSC8607 Introduction to Deep Learning
